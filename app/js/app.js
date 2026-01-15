@@ -1,226 +1,176 @@
 let app_id, account_id;
 let cachedFile = null;
 let cachedBase64 = null;
-let legalNameTaxablePerson = "";
-let registered_Address = "";
 
-// --- UI / Error Functions ---
-function clearErrors() {
-  document.querySelectorAll(".error-message").forEach(span => span.textContent = "");
+const dropZone = document.getElementById("drop-zone");
+const fileInput = document.getElementById("attach-acknowledgement");
+
+function showModal(type, title, message) {
+  const modal = document.getElementById("custom-modal");
+  const iconSuccess = document.getElementById("modal-icon-success");
+  const iconError = document.getElementById("modal-icon-error");
+  const modalBtn = document.getElementById("modal-close");
+  
+  document.getElementById("modal-title").textContent = title;
+  document.getElementById("modal-message").textContent = message;
+  
+  modalBtn.onclick = closeModal;
+
+  if (type === "success") { 
+    iconSuccess.classList.remove("hidden"); 
+    iconError.classList.add("hidden");
+    
+    modalBtn.onclick = async () => {
+      modalBtn.disabled = true;
+      modalBtn.textContent = "Finalizing...";
+      try {
+        await ZOHO.CRM.BLUEPRINT.proceed();
+        setTimeout(() => {
+          window.top.location.href = window.top.location.href;
+        }, 800);
+      } catch (e) {
+        console.error("Blueprint error", e);
+        ZOHO.CRM.UI.Popup.closeReload();
+      }
+    };
+  } else { 
+    iconSuccess.classList.add("hidden"); 
+    iconError.classList.remove("hidden"); 
+  }
+  
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
 }
 
-function showError(fieldId, message) {
-  const errorSpan = document.getElementById(`error-${fieldId}`);
-  if (errorSpan) errorSpan.textContent = message;
+function closeModal() {
+  const modal = document.getElementById("custom-modal");
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
 }
 
-function showUploadBuffer(message = "Caching file...") {
-  const buffer = document.getElementById("upload-buffer");
-  const title = document.getElementById("upload-title");
-  const bar = document.getElementById("upload-progress");
-  if (title) title.textContent = message;
-  if (buffer) buffer.classList.remove("hidden");
-  if (bar) {
-    bar.classList.remove("animate");
-    void bar.offsetWidth;
-    bar.classList.add("animate");
-  }
+function clearErrors() { document.querySelectorAll(".error-message").forEach(span => span.textContent = ""); }
+function showError(fieldId, message) { const errorSpan = document.getElementById(`error-${fieldId}`); if (errorSpan) errorSpan.textContent = message; }
+
+function showUploadBuffer(message = "Processing...") {
+  const buffer = document.getElementById("upload-buffer");
+  document.getElementById("upload-title").textContent = message;
+  buffer.classList.remove("hidden");
 }
 
-function hideUploadBuffer() {
-  const buffer = document.getElementById("upload-buffer");
-  const bar = document.getElementById("upload-progress");
-  if (buffer) buffer.classList.add("hidden");
-  if (bar) bar.classList.remove("animate");
-}
+function hideUploadBuffer() { document.getElementById("upload-buffer").classList.add("hidden"); }
 
-// --- Close Widget ---
-async function closeWidget() {
-  await ZOHO.CRM.UI.Popup.closeReload().catch(err => console.error("Error closing widget:", err));
-}
+async function closeWidget() { await ZOHO.CRM.UI.Popup.closeReload().catch(err => console.error(err)); }
 
-// --- Page Load ---
 ZOHO.embeddedApp.on("PageLoad", async (entity) => {
-  try {
-    const entity_id = entity.EntityId;
-    const appResponse = await ZOHO.CRM.API.getRecord({
-      Entity: "Applications1",
-      approved: "both",
-      RecordID: entity_id,
-    });
-    const applicationData = appResponse.data[0];
-    app_id = applicationData.id;
-
-    // Defensive check
-    if (!applicationData.Account_Name || !applicationData.Account_Name.id) {
-        console.error("Application record is missing a linked Account ID.");
-    }
-
-    account_id = applicationData.Account_Name.id;
-
-    const accountResponse = await ZOHO.CRM.API.getRecord({
-      Entity: "Accounts",
-      approved: "both",
-      RecordID: account_id,
-    });
-    const accountData = accountResponse.data[0];
-
-    legalNameTaxablePerson = accountData.Legal_Name_of_Taxable_Person || applicationData.Account_Name.name || "";
-    registered_Address = accountData.Registered_Address || "";
-
-    document.getElementById("name-of-taxable-person").value = legalNameTaxablePerson;
-    document.getElementById("registered-address").value = registered_Address;
-
-  } catch (err) {
-    console.error("PageLoad Error:", err);
-  }
+  try {
+    const appResponse = await ZOHO.CRM.API.getRecord({ Entity: "Applications1", RecordID: entity.EntityId });
+    const appData = appResponse.data[0];
+    app_id = appData.id;
+    account_id = appData.Account_Name?.id || "";
+    const accResponse = await ZOHO.CRM.API.getRecord({ Entity: "Accounts", RecordID: account_id });
+    const accData = accResponse.data[0];
+    document.getElementById("name-of-taxable-person").value = accData.Legal_Name_of_Taxable_Person || appData.Account_Name?.name || "";
+    document.getElementById("registered-address").value = accData.Registered_Address || "";
+  } catch (err) { console.error(err); }
 });
 
-// --- File Upload ---
-async function cacheFileOnChange(event) {
-  clearErrors();
-  const fileInput = event.target;
-  const file = fileInput?.files[0];
-
-  if (!file) {
-    cachedFile = null;
-    cachedBase64 = null;
-    return;
-  }
-
-  if (file.size > 10 * 1024 * 1024) {
-    showError("attach-acknowledgement", "File size must not exceed 10MB.");
-    cachedFile = null;
-    cachedBase64 = null;
-    fileInput.value = "";
-    return;
-  }
-
-  showUploadBuffer("Reading file into memory...");
-
-  try {
-    const base64DataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-
-    cachedFile = file;
-    cachedBase64 = base64DataUrl.split(",")[1];
-
-    await new Promise(res => setTimeout(res, 500)); // UX delay
-    hideUploadBuffer();
-  } catch (err) {
-    console.error("Error caching file:", err);
-    hideUploadBuffer();
-    showError("attach-acknowledgement", "Failed to read file.");
-    cachedFile = null;
-    cachedBase64 = null;
-    fileInput.value = "";
-  }
+async function handleFile(file) {
+  clearErrors();
+  const display = document.getElementById("file-name-display");
+  if (!file) { cachedFile = null; cachedBase64 = null; display.textContent = "Click or drag & drop"; return; }
+  
+  if (file.size > 20 * 1024 * 1024) { 
+    showModal("error", "File Too Large", "Max size is 20MB.");
+    return; 
+  }
+  
+  display.textContent = `File: ${file.name}`;
+  
+  try {
+    const content = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.onerror = rej;
+      r.readAsArrayBuffer(file);
+    });
+    cachedFile = file;
+    cachedBase64 = content;
+  } catch (err) { 
+    showModal("error", "Error", "Failed to read file."); 
+  }
 }
 
-async function uploadFileToCRM() {
-  if (!cachedFile || !cachedBase64) throw new Error("No cached file found.");
+fileInput.addEventListener("change", (e) => handleFile(e.target.files[0]));
 
-  showUploadBuffer("Uploading file to CRM...");
+dropZone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dropZone.classList.add("dragover");
+});
 
-  return await ZOHO.CRM.API.attachFile({
-    Entity: "Applications1",
-    RecordID: app_id,
-    File: {
-      Name: cachedFile.name,
-      Content: cachedBase64,
-    },
-  });
-}
+dropZone.addEventListener("dragleave", () => {
+  dropZone.classList.remove("dragover");
+});
 
-// --- Main Submission ---
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("dragover");
+  const files = e.dataTransfer.files;
+  if (files.length) {
+    fileInput.files = files; 
+    handleFile(files[0]);
+  }
+});
+
 async function update_record(event) {
-  event.preventDefault();
-  clearErrors();
-  let hasError = false;
+  event.preventDefault();
+  clearErrors();
+  const btn = document.getElementById("submit_button_id");
+  const ref = document.getElementById("reference-number").value.trim();
+  const name = document.getElementById("name-of-taxable-person").value.trim();
+  const addr = document.getElementById("registered-address").value.trim();
+  const date = document.getElementById("application-date").value.trim();
+  
+  if (!ref || !name || !addr || !date || !cachedFile || !cachedBase64) {
+    if(!ref) showError("reference-number", "Required");
+    if(!name) showError("name-of-taxable-person", "Required");
+    if(!addr) showError("registered-address", "Required");
+    if(!date) showError("application-date", "Required");
+    if(!cachedFile) showError("attach-acknowledgement", "Upload required");
+    return;
+  }
 
-  const submitBtn = document.getElementById("submit_button_id");
-  const referenceNo = document.getElementById("reference-number")?.value.trim();
-  const taxablePerson = document.getElementById("name-of-taxable-person")?.value.trim();
-  const registeredAddress = document.getElementById("registered-address")?.value.trim();
-  const applicationDate = document.getElementById("application-date")?.value.trim();
+  btn.disabled = true;
+  btn.textContent = "Updating...";
+  showUploadBuffer("Submitting...");
+
+  try {
+    await ZOHO.CRM.API.updateRecord({
+      Entity: "Applications1",
+      APIData: { id: app_id, Reference_Number: ref, Legal_Name_of_Taxable_Person: name, Registered_Address: addr, Application_Date: date }
+    });
     
-  const safe_account_id = account_id ? account_id.trim() : "";
-
-  // Console logs for debugging
-  console.log("Account ID:", safe_account_id);
-  console.log("Taxable Person Name:", taxablePerson);
-  console.log("Registered Address:", registeredAddress);
-
-  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Submitting..."; }
-
-  // --- Validation ---
-  if (!referenceNo) { showError("reference-number", "Reference Number required."); hasError = true; }
-  if (!taxablePerson) { showError("name-of-taxable-person", "Legal Name required."); hasError = true; }
-  if (!registeredAddress) { showError("registered-address", "Registered Address required."); hasError = true; }
-  if (!applicationDate) { showError("application-date", "Application Date required."); hasError = true; }
-  if (!cachedFile || !cachedBase64) { showError("attach-acknowledgement", "Please upload the Acknowledgement file."); hasError = true; }
-
-  // CRITICAL VALIDATION: Check the safe version of the account ID
-  if (!safe_account_id) { 
-    showError("submit_button_id", "Error: Associated Account ID is missing. Cannot proceed."); 
-    hasError = true; 
-    console.error("FATAL ERROR: Account ID is empty or null. Check PageLoad data.");
-  }
-
-  if (hasError) {
-    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Submit"; }
-    hideUploadBuffer();
-    return;
-  }
-
-  try {
-    // --- 1. Update Application record ---
-    await ZOHO.CRM.API.updateRecord({
-      Entity: "Applications1",
-      APIData: {
-        id: app_id,
-        Reference_Number: referenceNo,
-        Legal_Name_of_Taxable_Person: taxablePerson,
-        Registered_Address: registeredAddress,
-        Application_Date: applicationDate
-      }
-    });
-
-    // --- 2. Update Account via Deluge function (USING REQUESTED SYNTAX) ---
-    var func_name = "ta_ctr_submit_to_auth_update_account";
-    var req_data = {
-        "arguments": JSON.stringify({
-            "account_id": safe_account_id,
-            "taxable_name": taxablePerson,
-            "registered_address": registeredAddress
-        })
-    };
-
-    const accountResponse = await ZOHO.CRM.FUNCTIONS.execute(func_name, req_data);
+    await ZOHO.CRM.FUNCTIONS.execute("ta_ctr_submit_to_auth_update_account", {
+      arguments: JSON.stringify({ account_id, taxable_name: name, registered_address: addr })
+    });
     
-    console.log("Account Function Response:", accountResponse);
-
-    // --- 3. Attach file ---
-    await uploadFileToCRM();
-
-    // --- 4. Blueprint & Close ---
-    await ZOHO.CRM.BLUEPRINT.proceed();
-    await closeWidget();
-
-  } catch (err) {
-    console.error("Submission Error:", err);
-    showError("submit_button_id", "Submission failed. Check console.");
-    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Submit"; }
-    hideUploadBuffer();
-  }
+    await ZOHO.CRM.API.attachFile({ 
+        Entity: "Applications1", 
+        RecordID: app_id, 
+        File: { 
+            Name: cachedFile.name, 
+            Content: cachedBase64 
+        } 
+    });
+    
+    hideUploadBuffer();
+    showModal("success", "Success!", "Record updated. Click Ok to reload.");
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = "Submit";
+    hideUploadBuffer();
+    showModal("error", "Failed", "Check connection and try again.");
+  }
 }
 
-// --- Event Listeners ---
-document.getElementById("attach-acknowledgement").addEventListener("change", cacheFileOnChange);
 document.getElementById("record-form").addEventListener("submit", update_record);
-
 ZOHO.embeddedApp.init();
